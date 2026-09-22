@@ -17,10 +17,10 @@ OpenAI 兼容 API 纯转发代理，无服务器轻量版（边缘函数）。
 上游地址是 `src/handle_request.js` 顶部的常量，按需修改：
 
 ```js
-const UPSTREAM_BASE = 'http://45.205.27.136:8080';
+const UPSTREAM_BASE = 'http://45.205.27.136.nip.io:8080';
 ```
 
-当前示例使用 HTTP。生产环境建议使用 HTTPS，避免 `Authorization` 中的 API Key 在代理到上游的链路中明文传输。
+Vercel Edge 禁止直接访问裸 IP，因此默认使用 `nip.io` 将 `45.205.27.136` 映射为域名。若你有自己的域名，建议将域名解析到该服务器后改成自己的 HTTPS 地址。当前示例使用 HTTP，生产环境建议使用 HTTPS，避免 `Authorization` 中的 API Key 在代理到上游的链路中明文传输。
 
 ## API 说明
 
@@ -32,7 +32,16 @@ const UPSTREAM_BASE = 'http://45.205.27.136:8080';
 | `POST /v1/responses` | 同上，上游两种写法等价 |
 | `POST /v1/chat/completions` | OpenAI Chat Completions |
 
-其他 OpenAI 接口（`/v1/models`、`/v1/embeddings` 等）不做任何限制，同样原样转发。
+其他 OpenAI 接口（包括 `GET /v1/models`、`POST /v1/embeddings` 以及上游提供的其他接口）同样原样转发，不在代理层做接口白名单限制。除根路径健康检查和 OPTIONS 预检外，客户端请求的路径、方法、查询参数、请求体和响应状态都会透传到上游。
+
+上游要求认证。访问 `/v1/models` 时也必须带 API Key，例如：
+
+```bash
+curl --location 'https://<YOUR_DEPLOYED_DOMAIN>/v1/models' \
+--header 'Authorization: Bearer <YOUR_API_KEY>'
+```
+
+代理会透传 `Authorization`、`x-api-key` 和 `x-goog-api-key`。这三个认证头都支持用逗号分隔多个 Key，代理会随机选择一个发送给上游。
 
 **Curl 示例:**
 ```bash

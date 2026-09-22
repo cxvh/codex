@@ -17,8 +17,12 @@
 // ============================================================================
 
 // 上游 OpenAI 兼容服务地址, 换上游只需要改这一行。
-// 当前地址使用 HTTP，Authorization 会以明文经过代理到上游；生产环境建议改成 HTTPS。
-const UPSTREAM_BASE = 'http://45.205.27.136:8080';
+//
+// 这里使用 nip.io 将 IP 映射成域名：Vercel Edge 禁止直接 fetch 裸 IP，
+// 直接写 http://45.205.27.136:8080 会返回 "Direct IP access is not allowed"。
+// 如果你有自己的域名，建议把它解析到该服务器后改成自己的 HTTPS 域名。
+// 当前地址仍使用 HTTP，Authorization 会以明文经过代理到上游；生产环境建议改成 HTTPS。
+const UPSTREAM_BASE = 'http://45.205.27.136.nip.io:8080';
 
 // 请求方向需要剥离的头(全部小写比较):
 // - host / connection / keep-alive / transfer-encoding / upgrade / te /
@@ -89,15 +93,14 @@ export async function handleRequest(request) {
     }
 
     // ---- 多 Key 负载均衡 ----
-    // 客户端在 Authorization 头里携带多个 Bearer Key(逗号分隔)时随机选一个。
-    // 只对 Bearer 做轮换，避免破坏 Basic 等其它认证方案的 user:password 结构。
-    const auth = request.headers.get('Authorization');
-    if (auth) {
-      const selected = selectApiKey(auth);
-      if (selected) {
-        headers.set('Authorization', selected);
-      }
-    }
+    // 上游支持三种常见认证头:
+    // - Authorization: Bearer key1,key2
+    // - x-api-key: key1,key2
+    // - x-goog-api-key: key1,key2
+    // 三者都支持逗号分隔的 Key 池，分别随机选一个；单 Key 保持原样。
+    rotateCredentialHeader(headers, 'authorization', true);
+    rotateCredentialHeader(headers, 'x-api-key', false);
+    rotateCredentialHeader(headers, 'x-goog-api-key', false);
 
     // GET/HEAD 按规范不允许携带请求体, 其余方法原样透传 body(流式, 不落内存)
     const hasBody = request.body != null && request.method !== 'GET' && request.method !== 'HEAD';
@@ -142,31 +145,30 @@ export async function handleRequest(request) {
   }
 }
 
-// 从 Authorization 头里随机选取一个 Key
-// 输入: "Bearer key1,key2,key3"  输出: "Bearer key2"(随机)
-// 单 Key(不含逗号)时返回 null, 表示无需干预, 保持原样转发
-function selectApiKey(auth) {
-  // 解析认证方案与凭据部分。
-  const match = auth.match(/^(\w+)\s+(.*)$/);
-  if (!match) {
-    return null;
+// 从一个认证头里随机选取一个 Key。
+// Authorization 输入: "Bearer key1,key2"，输出: "Bearer key1" 或 "Bearer key2"。
+// x-api-key / x-goog-api-key 输入: "key1,key2"，输出单个 Key。
+function rotateCredentialHeader(headers, headerName, bearerHeader) {
+  const value = headers.get(headerName);
+  if (!value || !value.includes(',')) {
+    return;
   }
-  const [, scheme, credentials] = match;
-  if (scheme.toLowerCase() !== 'bearer') {
-    return null;
+  let scheme = '';
+  let credentials = value;
+  if (bearerHeader) {
+    const match = value.match(/^(Bearer)\s+(.+)$/i);
+    if (!match) {
+      return;
+    }
+    scheme = match[1];
+    credentials = match[2];
   }
-  // 凭据里没有逗号说明是单 Key, 不处理
-  if (!credentials.includes(',')) {
-    return null;
-  }
-  // 逗号分隔出多个 Key, trim 去掉多余空格, 过滤空串
-  const apiKeys = credentials.split(',').map((k) => k.trim()).filter((k) => k);
+  const apiKeys = credentials.split(',').map((key) => key.trim()).filter(Boolean);
   if (apiKeys.length === 0) {
-    return null;
+    return;
   }
-  // 随机均匀选取一个。日志不输出 Key 或其片段，避免凭据进入平台日志系统。
   const selected = apiKeys[Math.floor(Math.random() * apiKeys.length)];
-  return `${scheme} ${selected}`;
+  headers.set(headerName, scheme ? `${scheme} ${selected}` : selected);
 }
 
 // CORS 预检响应: 放行所有方法与请求头, 浏览器缓存 24 小时减少重复预检
