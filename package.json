@@ -1,0 +1,6 @@
+{
+  "name": "codex",
+  "devDependencies": {
+    "wrangler": "^4.23.0"
+  }
+}
